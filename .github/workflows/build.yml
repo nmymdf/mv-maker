@@ -64,7 +64,15 @@ jobs:
             --add-data "ffmpeg;ffmpeg" \
             --add-data "icon.ico;." --add-data "data;data" \
             --collect-submodules mvmaker main.py
-          rm -f dist/MVMaker/_internal/PySide6/opengl32sw.dll
+          I=dist/MVMaker/_internal
+          rm -f $I/PySide6/opengl32sw.dll
+          # ffmpeg 的 dll 只要留在 ffmpeg 資料夾，外層重複的刪掉
+          for f in $I/ffmpeg/*.dll; do rm -f "$I/$(basename "$f")"; done
+          # 用不到的：OpenCV 自己的影片模組、Qt 的 QML / Quick / PDF
+          rm -f $I/cv2/opencv_videoio_ffmpeg*.dll
+          rm -f $I/PySide6/Qt6Quick*.dll $I/PySide6/Qt6Qml*.dll $I/PySide6/Qt6Pdf*.dll $I/PySide6/Qt6VirtualKeyboard*.dll
+          rm -rf $I/PySide6/qml $I/PySide6/plugins/virtualkeyboard
+          ls $I
           du -sh dist/MVMaker
           du -sh dist/MVMaker/_internal/* | sort -h | tail -15 || true
       - name: Smoke test (built exe)
