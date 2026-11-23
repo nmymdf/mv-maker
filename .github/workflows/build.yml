@@ -20,7 +20,7 @@ jobs:
           curl -sSL -o ff.zip https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl-shared.zip
           unzip -q ff.zip -d ffx
           mkdir -p ffmpeg
-          cp ffx/*/bin/ffmpeg.exe ffx/*/bin/ffprobe.exe ffx/*/bin/*.dll ffmpeg/
+          cp ffx/*/bin/ffmpeg.exe ffx/*/bin/ffprobe.exe ffx/*/bin/ffplay.exe ffx/*/bin/*.dll ffmpeg/
           ls -la ffmpeg
           ffmpeg/ffmpeg.exe -version | head -1
       - name: Set screen size
@@ -49,6 +49,11 @@ jobs:
           MV_SIZE: 1280x720
           PYTHONIOENCODING: utf-8
         run: python main.py
+      - name: Audio player test (report only)
+        continue-on-error: true
+        env:
+          PYTHONIOENCODING: utf-8
+        run: python tools/audio_test.py demo/song.mp3
       - name: Check python export report
         shell: bash
         run: |

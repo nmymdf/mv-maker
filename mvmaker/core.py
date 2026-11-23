@@ -6,7 +6,7 @@ import os
 import re
 from dataclasses import dataclass, field, asdict
 
-VERSION = "0.1.0"
+VERSION = "0.1.1"
 
 IMAGE_EXT = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".heic", ".heif", ".tif", ".tiff"}
 VIDEO_EXT = {".mp4", ".mov", ".m4v", ".avi", ".mkv", ".mts", ".m2ts", ".wmv", ".3gp", ".webm"}
@@ -73,6 +73,7 @@ def parse_seconds(text: str) -> float | None:
 class LyricLine:
     time: float | None = None
     text: str = ""
+    est: bool = False       # True = 自動估的時間（還沒對準）
 
 
 @dataclass
@@ -181,6 +182,40 @@ def parse_lyrics_text(text: str) -> list[LyricLine]:
     if has_tags:
         out.sort(key=lambda l: l.time)
     return out
+
+
+def spread_untimed(lines: list[LyricLine], song_len: float) -> int:
+    """沒有時間的歌詞先依字數平均排進歌曲裡（當作初稿），回傳排了幾句。"""
+    if not song_len or not lines:
+        return 0
+    idx = [i for i, l in enumerate(lines) if l.time is None]
+    if not idx:
+        return 0
+    n = len(lines)
+    # 找每一段連續沒時間的句子，前後用已知時間（或歌曲頭尾）夾住
+    i = 0
+    count = 0
+    while i < n:
+        if lines[i].time is not None:
+            i += 1
+            continue
+        j = i
+        while j < n and lines[j].time is None:
+            j += 1
+        a = lines[i - 1].time + 2.0 if i > 0 else song_len * 0.08
+        b = lines[j].time if j < n else song_len * 0.95
+        if b <= a:
+            b = min(song_len, a + 3.0 * (j - i))
+        weights = [max(2, len(l.text)) + 4 for l in lines[i:j]]
+        tot = sum(weights)
+        t = a
+        for k, l in enumerate(lines[i:j]):
+            l.time = round(t, 1)
+            l.est = True
+            t += (b - a) * weights[k] / tot
+            count += 1
+        i = j
+    return count
 
 
 def lyrics_to_lrc(lines: list[LyricLine]) -> str:

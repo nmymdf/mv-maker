@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
 
 from . import core
 from .core import (Project, Clip, LyricLine, Style, VERSION, parse_time, fmt_time, parse_seconds,
-                   parse_lyrics_text, kind_of, build_plan, unique_path, COLORS, POSITIONS, EFFECTS,
+                   parse_lyrics_text, spread_untimed, kind_of, build_plan, unique_path, COLORS, POSITIONS, EFFECTS,
                    MOTIONS, TRANSITIONS, PORTRAIT_BGS, YESNO, SIZES, SEG_LENS, AUDIO_EXT)
 from .ui_table import ExcelTable, Col
 from . import media
@@ -132,6 +132,7 @@ class LyricsTable(ExcelTable):
                 self.lines.append(LyricLine(t, ""))
             else:
                 self.lines[r].time = t
+                self.lines[r].est = False
         else:
             if new:
                 if not text.strip():
@@ -140,6 +141,15 @@ class LyricsTable(ExcelTable):
             else:
                 self.lines[r].text = text.strip()
         return True
+
+    def decorate(self, r, items):
+        if self.lines[r].est:
+            it = items["time"]
+            it.setForeground(QBrush(self.palette().placeholderText().color()))
+            f = it.font()
+            f.setItalic(True)
+            it.setFont(f)
+            it.setToolTip("自動估的時間，還沒對準。用「邊聽邊標記」或直接改。")
 
     def keyPressEvent(self, e):
         if e.matches(QKeySequence.Paste) and self.state() != QAbstractItemView.EditingState:
@@ -607,17 +617,12 @@ class MainWindow(QMainWindow):
 
     def _init_player(self):
         self.player = None
-        if os.environ.get("MV_SMOKE"):     # 自動測試的機器沒有音效卡
-            return
-        try:
-            from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
-            self.player = QMediaPlayer(self)
-            self.audio = QAudioOutput(self)
-            self.audio.setVolume(0.9)
-            self.player.setAudioOutput(self.audio)
-            self.player.playbackStateChanged.connect(self._play_state)
-        except Exception:
-            self.player = None
+        if os.environ.get("MV_SMOKE") and not os.environ.get("MV_AUDIO_TEST"):
+            return                          # 自動測試的機器沒有音效卡
+        from .player import AudioPlayer
+        self.player = AudioPlayer(self)
+        self.player.stateChanged.connect(self._play_state)
+        self.player.message.connect(lambda m: self.say(m, warn=True))
 
     # ------------------------------------------------------------ 專案
     def project_file_for(self, song: str) -> str:
@@ -720,12 +725,13 @@ class MainWindow(QMainWindow):
             self.project.song = path
             self.project.song_duration = media.probe(path)["duration"]
             self._set_player_source(path)
+            if any(l.time is None for l in self.project.lyrics):
+                self._after_lyrics_loaded()
             # 同資料夾有同名歌詞檔就自動讀
             for ext in (".lrc", ".txt"):
                 lf = os.path.splitext(path)[0] + ext
                 if os.path.exists(lf) and not self.project.lyrics:
                     self._read_lyrics_file(lf)
-                    self.say(f"已自動讀取歌詞：{os.path.basename(lf)}")
                     break
         self.seek_t = 0.0
         self.save_project()
@@ -733,7 +739,7 @@ class MainWindow(QMainWindow):
 
     def _set_player_source(self, path):
         if self.player:
-            self.player.setSource(QUrl.fromLocalFile(path))
+            self.player.setSource(path)
 
     def import_lyrics(self):
         path, _ = QFileDialog.getOpenFileName(self, "匯入歌詞", self.start_dir("song_dir"),
@@ -759,10 +765,20 @@ class MainWindow(QMainWindow):
         else:
             text = raw.decode("utf-8", "ignore")
         self.project.lyrics = parse_lyrics_text(text)
-        n = len(self.project.lyrics)
-        timed = sum(1 for l in self.project.lyrics if l.time is not None)
-        if n and not timed:
-            self.say(f"讀到 {n} 句歌詞，還沒有時間。可以按「邊聽邊標記」，或直接在時間欄輸入。")
+        self._after_lyrics_loaded()
+
+    def _after_lyrics_loaded(self):
+        lines = self.project.lyrics
+        n = len(lines)
+        untimed = sum(1 for l in lines if l.time is None)
+        if not n:
+            self.say("歌詞檔裡沒有讀到歌詞", error=True)
+        elif untimed and not self.project.song_duration:
+            self.say(f"讀到 {n} 句歌詞，還沒有時間。請按「選歌曲」，選好歌就會先幫你排上時間。", warn=True)
+        elif untimed:
+            spread_untimed(lines, self.project.song_duration)
+            self.say(f"讀到 {n} 句歌詞。歌詞檔裡沒有時間，已先平均排好（灰色字）；"
+                     f"請按「邊聽邊標記」對準。", warn=True)
         else:
             self.say(f"讀到 {n} 句歌詞")
 
@@ -948,8 +964,7 @@ class MainWindow(QMainWindow):
         self._update_time(self.seek_t)
 
     def playing(self):
-        from PySide6.QtMultimedia import QMediaPlayer
-        return bool(self.player) and self.player.playbackState() == QMediaPlayer.PlayingState
+        return bool(self.player) and self.player.is_playing()
 
     def toggle_play(self):
         if not self.player or not self.project.song:
@@ -1049,9 +1064,12 @@ class MainWindow(QMainWindow):
                 self.say("請先匯入或輸入歌詞", error=True)
                 return
             lines = self.project.lyrics
-            r = self.lyrics.currentRow()
-            if not 0 <= r < len(lines):
-                r = next((i for i, l in enumerate(lines) if l.time is None), 0)
+            # 從第一句還沒對準的開始；全部對過了就從目前選的那句開始
+            r = next((i for i, l in enumerate(lines) if l.time is None or l.est), -1)
+            if r < 0:
+                r = self.lyrics.currentRow()
+                if not 0 <= r < len(lines):
+                    r = 0
             self.mark_row = r
             prev = lines[r - 1].time if r > 0 and lines[r - 1].time is not None else 0.0
             self.marking = True
@@ -1089,6 +1107,7 @@ class MainWindow(QMainWindow):
                 lines = self.project.lyrics
                 if self.mark_row < len(lines):
                     lines[self.mark_row].time = round(max(0.0, self.player.position() / 1000 - 0.1), 1)
+                    lines[self.mark_row].est = False
                     self.lyrics.refresh()
                     self.mark_row += 1
                     self._update_mark_hint()
@@ -1196,9 +1215,9 @@ class MainWindow(QMainWindow):
             self.worker.cancel()
 
     # ------------------------------------------------------------ 雜項
-    def say(self, msg, error=False):
+    def say(self, msg, error=False, warn=False):
         self.status.setText(msg)
-        self.status.setProperty("error", error)
+        self.status.setProperty("kind", "error" if error else "warn" if warn else "")
         self.status.style().unpolish(self.status)
         self.status.style().polish(self.status)
 
@@ -1220,6 +1239,8 @@ class MainWindow(QMainWindow):
             self.worker.wait(5000)
         self.save_project()
         self.pool.clear()
+        if self.player:
+            self.player.close()
         if self.composer:
             self.composer.close()
         super().closeEvent(e)
@@ -1271,8 +1292,9 @@ def stylesheet(dark: bool) -> str:
     QLabel#sectionTitle {{ font-size: 13pt; font-weight: bold; }}
     QLabel#muted {{ color: {text2}; }}
     QLabel#timeLabel {{ font-size: 13pt; }}
-    QLabel#status {{ font-size: 13pt; }}
-    QLabel#status[error="true"] {{ color: #D33; }}
+    QLabel#status {{ font-size: 15pt; padding: 4px 10px; border-radius: 8px; }}
+    QLabel#status[kind="error"] {{ color: #FFFFFF; background: #C0392B; font-weight: bold; }}
+    QLabel#status[kind="warn"] {{ color: #3A2A00; background: #F5C542; font-weight: bold; }}
     QLabel#markHint {{ background: rgba(201,151,28,0.18); border: 1px solid {GOLD}; border-radius: 8px;
                        padding: 8px 12px; font-size: 15pt; font-weight: bold; }}
     QLabel#preview {{ background: #000000; border-radius: 6px; }}
