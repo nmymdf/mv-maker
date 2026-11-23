@@ -1,0 +1,4 @@
+multimedia ok
+autopick ok 5 clips 1.6s
+export 16:9 ok 1920x1080 20.0s audio=True took 19.1s
+export 9:16 ok 1080x1920 20.0s audio=True took 21.1s
