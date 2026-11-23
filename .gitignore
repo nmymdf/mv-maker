@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+build/
+dist/
+ffmpeg/
+ffx/
+demo/
+shots*/
+*.spec
+*.MV專案.json

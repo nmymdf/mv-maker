@@ -1,0 +1,102 @@
+name: build-exe
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pyside6 opencv-python-headless numpy pillow pillow-heif pyinstaller
+      - name: Get ffmpeg
+        shell: bash
+        run: |
+          curl -sSL -o ff.zip https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl-shared.zip
+          unzip -q ff.zip -d ffx
+          mkdir -p ffmpeg
+          cp ffx/*/bin/ffmpeg.exe ffx/*/bin/ffprobe.exe ffx/*/bin/*.dll ffmpeg/
+          ls -la ffmpeg
+          ffmpeg/ffmpeg.exe -version | head -1
+      - name: Set screen size
+        continue-on-error: true
+        shell: pwsh
+        run: Set-DisplayResolution -Width 1920 -Height 1080 -Force
+      - name: Make demo files
+        env:
+          PYTHONIOENCODING: utf-8
+        run: python tools/make_demo.py demo ffmpeg/ffmpeg.exe
+      - name: Smoke test (python, light, with export)
+        env:
+          MV_SMOKE: "1"
+          MV_DEMO: demo
+          MV_SHOTS: shots
+          MV_THEME: light
+          MV_EXPORT_TEST: "1"
+          PYTHONIOENCODING: utf-8
+        run: python main.py
+      - name: Smoke test (python, dark, small screen)
+        env:
+          MV_SMOKE: "1"
+          MV_DEMO: demo
+          MV_SHOTS: shots
+          MV_THEME: dark
+          MV_SIZE: 1280x720
+          PYTHONIOENCODING: utf-8
+        run: python main.py
+      - name: Check python export report
+        shell: bash
+        run: cat shots/export_report.txt && ! grep -q FAIL shots/export_report.txt
+      - name: Build
+        shell: bash
+        run: |
+          VER=$(grep -oP '^VERSION = "\K[^"]+' mvmaker/core.py)
+          echo "VER=$VER" >> $GITHUB_ENV
+          CASCADE=$(python -c "import cv2,os;print(os.path.join(cv2.data.haarcascades,'haarcascade_frontalface_default.xml'))")
+          pyinstaller --noconfirm --windowed --name MVMaker --icon icon.ico \
+            --add-data "ffmpeg;ffmpeg" \
+            --add-data "icon.ico;." --add-data "$CASCADE;data" \
+            --collect-submodules mvmaker main.py
+          rm -f dist/MVMaker/_internal/PySide6/opengl32sw.dll
+          du -sh dist/MVMaker
+          du -sh dist/MVMaker/_internal/* | sort -h | tail -15
+      - name: Smoke test (built exe)
+        shell: pwsh
+        run: |
+          $env:MV_SMOKE = "1"; $env:MV_DEMO = "demo"; $env:MV_SHOTS = "shots_exe"; $env:MV_THEME = "light"; $env:MV_EXPORT_TEST = "1"
+          Start-Process -FilePath "dist/MVMaker/MVMaker.exe" -Wait
+          Get-Content shots_exe/export_report.txt
+          if (Select-String -Path shots_exe/export_report.txt -Pattern "FAIL") { exit 1 }
+      - name: Zip
+        shell: pwsh
+        run: |
+          Remove-Item -Recurse -Force dist/MVMaker/_internal/shots* -ErrorAction SilentlyContinue
+          Compress-Archive -Path dist/MVMaker -DestinationPath "MVMaker_v$env:VER.zip"
+          Get-Item "MVMaker_v$env:VER.zip" | Select-Object Name, Length
+      - uses: actions/upload-artifact@v4
+        with:
+          name: exe
+          path: MVMaker_v*.zip
+      - name: Publish to exe branch
+        shell: bash
+        run: |
+          mkdir out && cp -r shots out/ && cp -r shots_exe out/
+          rm -f out/shots*/*.mp4
+          Z=$(ls MVMaker_v*.zip)
+          ls -la $Z
+          # GitHub 單檔上限 100MB：太大就切成幾段，下載後再合併
+          if [ $(stat -c%s "$Z") -gt 95000000 ]; then split -b 90m -d "$Z" "out/$Z.part"; else cp "$Z" out/; fi
+          (cd out && sha256sum MVMaker_v* > SHA256.txt; cat SHA256.txt)
+          sha256sum "$Z" >> out/SHA256.txt
+          cd out
+          git init -q
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          git checkout -q -b exe
+          git add . && git commit -qm "build ${GITHUB_SHA}"
+          git push -f "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${GITHUB_REPOSITORY}.git" exe
