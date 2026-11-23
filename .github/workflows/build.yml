@@ -57,14 +57,13 @@ jobs:
         run: |
           VER=$(grep -oP '^VERSION = "\K[^"]+' mvmaker/core.py)
           echo "VER=$VER" >> $GITHUB_ENV
-          CASCADE=$(python -c "import cv2,os;print(os.path.join(cv2.data.haarcascades,'haarcascade_frontalface_default.xml'))")
           pyinstaller --noconfirm --windowed --name MVMaker --icon icon.ico \
             --add-data "ffmpeg;ffmpeg" \
-            --add-data "icon.ico;." --add-data "$CASCADE;data" \
+            --add-data "icon.ico;." --add-data "data;data" \
             --collect-submodules mvmaker main.py
           rm -f dist/MVMaker/_internal/PySide6/opengl32sw.dll
           du -sh dist/MVMaker
-          du -sh dist/MVMaker/_internal/* | sort -h | tail -15
+          du -sh dist/MVMaker/_internal/* | sort -h | tail -15 || true
       - name: Smoke test (built exe)
         shell: pwsh
         run: |
