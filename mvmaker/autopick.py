@@ -15,6 +15,8 @@ SAMPLE_FPS = 2
 
 
 def _face_detector():
+    if not hasattr(cv2, "CascadeClassifier"):   # 有些 OpenCV 版本沒有人臉辨識：就不算人臉分數
+        return None
     names = ["haarcascade_frontalface_default.xml"]
     dirs = []
     try:
@@ -26,7 +28,10 @@ def _face_detector():
     for d in dirs:
         p = os.path.join(d, names[0])
         if os.path.exists(p):
-            det = cv2.CascadeClassifier(p)
+            try:
+                det = cv2.CascadeClassifier(p)
+            except Exception:
+                return None
             if not det.empty():
                 return det
     return None
@@ -41,7 +46,10 @@ def faces(gray) -> int:
         _FACE = _face_detector() or False
     if not _FACE:
         return 0
-    found = _FACE.detectMultiScale(gray, 1.15, 5, minSize=(18, 18))
+    try:
+        found = _FACE.detectMultiScale(gray, 1.15, 5, minSize=(18, 18))
+    except Exception:
+        return 0
     return len(found)
 
 

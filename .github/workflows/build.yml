@@ -13,7 +13,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install pyside6 opencv-python-headless numpy pillow pillow-heif pyinstaller
+      - run: pip install pyside6 "opencv-python-headless<5" numpy pillow pillow-heif pyinstaller
       - name: Get ffmpeg
         shell: bash
         run: |
@@ -51,7 +51,10 @@ jobs:
         run: python main.py
       - name: Check python export report
         shell: bash
-        run: cat shots/export_report.txt && ! grep -q FAIL shots/export_report.txt
+        run: |
+          cat shots/export_report.txt
+          python -c "import cv2;print('opencv',cv2.__version__,'face',hasattr(cv2,'CascadeClassifier'))"
+          ! grep -q FAIL shots/export_report.txt
       - name: Build
         shell: bash
         run: |
